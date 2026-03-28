@@ -96,14 +96,20 @@ class PredictionTrader:
         }
 
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{REST_BASE}/v1/prediction-markets/events",
-                params=params
-            )
+            resp = await client.get(f"{REST_BASE}/v1/prediction-markets/events", params=params)
             resp.raise_for_status()
             data = resp.json()
 
         events = data.get("data", [])
+
+        # fetch page 2
+        async with httpx.AsyncClient() as client:
+            resp2 = await client.get(
+                f"{REST_BASE}/v1/prediction-markets/events",
+                params={"status": "active", "limit": 50, "offset": 50}
+            )
+            events += resp2.json().get("data", [])
+
         if not events:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -158,8 +164,12 @@ class PredictionTrader:
               "event_title": "<event title>",
               "contract_label": "<contract label>",
               "best_ask": <number>,
-              "reasoning": "<one sentence why this is the best match>"
+              "reasoning": "<one sentence why this is the best match>",
+              "confidence": "<high | low>"
             }}
+            
+            IMPORTANT: If none of the contracts genuinely match the user's intent,
+            return confidence="low". Do NOT force a match.
              
             Rules:
             - Match on event topic first, then on the outcome direction.
@@ -175,6 +185,11 @@ class PredictionTrader:
 
         raw = response.choices[0].message.content.strip()
         match = json.loads(raw)
+
+        if match.get("confidence") == "low":
+            raise ValueError(
+                f"No relevant market found for: {intent['event_description']}. Try topics like sports, crypto prices, politics, or economics.")
+
         match["outcome"] = intent["outcome"]
         return match
 
