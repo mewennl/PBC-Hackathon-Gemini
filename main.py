@@ -65,6 +65,8 @@ class PredictionTrader:
                             - If dollar_amount is missing or ambiguous, return null for that field.
                             - Return ONLY the JSON object. No explanation, no markdown, no backticks.
                             - Preserve specific names exactly as given (e.g. "Claude", "GPT-4", "Gemini") in the event_description.
+                            - "more than 10" means just above 10, so prefer a "10-15" contract over "above 15".
+                            Read the user's number as a threshold, not an exact match to the upper bound.
                         """
         response = await openai_client.chat.completions.create(
             model = "gpt-4o",
@@ -85,7 +87,7 @@ class PredictionTrader:
 
         return intent
 
-    async def search_market(self, intent): #dict to dict
+    async def search_market(self, intent, user_text: str): #dict to dict
         """
         search prediction market events by rest and uses gpt to pick best matching contract
         """
@@ -149,34 +151,40 @@ class PredictionTrader:
             reverse=True
         )
         events_summary_trimmed = events_summary[:10]
-        match_prompt = match_prompt = f"""
-            You are matching a user's prediction market intent to the best available contract.
-             
-            User intent: "{intent['event_description']}"
-            User outcome preference: {intent['outcome']} (yes = betting it happens, no = betting it doesn't)
-             
-            Available contracts (JSON array):
-            {json.dumps(events_summary_trimmed, indent=2)}
-             
-            Pick the single best matching contract and return ONLY this JSON:
-            {{
-              "instrument_symbol": "<exact instrumentSymbol from the list>",
-              "event_title": "<event title>",
-              "contract_label": "<contract label>",
-              "best_ask": <number>,
-              "reasoning": "<one sentence why this is the best match>",
-              "confidence": "<high | low>"
-            }}
-            
-            IMPORTANT: If none of the contracts genuinely match the user's intent,
-            return confidence="low". Do NOT force a match.
-             
-            Rules:
-            - Match on event topic first, then on the outcome direction.
-            - If the user says outcome=yes, pick the contract that represents the thing happening.
-            - If the user says outcome=no, pick the contract that represents the opposite (or the NO side).
-            - Return ONLY the JSON. No markdown, no backticks.
-            """
+        match_prompt = f"""
+        You are matching a user's prediction market intent to the best available contract.
+
+        User's exact original message: "{user_text}"
+        User intent summary: "{intent['event_description']}"
+        User outcome preference: {intent['outcome']} (yes = betting it happens, no = betting it doesn't)
+
+        Available contracts (JSON array):
+        {json.dumps(events_summary_trimmed, indent=2)}
+
+        Pick the single best matching contract and return ONLY this JSON:
+        {{
+          "instrument_symbol": "<exact instrumentSymbol from the list>",
+          "event_title": "<event title>",
+          "contract_label": "<contract label>",
+          "best_ask": <number>,
+          "reasoning": "<one sentence why this is the best match>",
+          "confidence": "<high | low>"
+        }}
+
+        IMPORTANT: If none of the contracts genuinely match the user's intent,
+        return confidence="low". Do NOT force a match.
+
+        Rules:
+        - Match on topic first, then specifics like numbers and timeframes.
+        - If the user mentions a specific number or timeframe, prefer contracts that match it,
+          but if only one relevant contract exists for that topic, match it anyway.
+        - If outcome=yes, pick the contract representing the thing happening.
+        - If outcome=no, look for a contract explicitly labeled "No" or the opposing side.
+          For categorical markets with no NO side, return confidence="low".
+        - Only return confidence="low" if the topic itself has no match — not because
+          the timeframe is slightly ambiguous.
+        - Return ONLY the JSON. No markdown, no backticks.
+        """
         response = await openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": match_prompt}],
@@ -184,7 +192,10 @@ class PredictionTrader:
         )
 
         raw = response.choices[0].message.content.strip()
+        print(f"DEBUG GPT match response: {raw}")
         match = json.loads(raw)
+        print(f"DEBUG match: {match}")
+
 
         if match.get("confidence") == "low":
             raise ValueError(
@@ -223,8 +234,8 @@ class PredictionTrader:
 
         result = data.get("result", {})
 
-        if "a" in data and "s" in data:
-            symbol = data["s"].upper()  #add .upper()
+        if "a" in data and "s" in data and data["a"]:  # add "and data["a"]"
+            symbol = data["s"].upper()
             ask = float(data["a"])
             if symbol in self.price_futures and not self.price_futures[symbol].done():
                 self.price_futures[symbol].set_result(ask)
@@ -274,22 +285,24 @@ class PredictionTrader:
                 pass
             self.price_futures.pop(instrument_symbol, None)
 
-    def build_confirmation(self, match: dict, ask:float, dollar_amount: float) -> dict:
-        """
-        Calc contracts and builds confirmation to show to the user
-        returns a dict with stuff to display
-        """
-        contracts = math.floor(dollar_amount / ask)
-        actual_cost = round(contracts * ask, 2)
-        potential_payout = contracts  # $1 per contract if correct
+    def build_confirmation(self, match: dict, ask: float, dollar_amount: float) -> dict:
+        outcome = match["outcome"]
+
+        # NO side costs 1 - ask
+        effective_price = round(1 - ask, 4) if outcome == "no" else ask
+
+        contracts = math.floor(dollar_amount / effective_price)
+        actual_cost = round(contracts * effective_price, 2)
+        potential_payout = contracts
         potential_profit = round(potential_payout - actual_cost, 2)
-        implied_probability = round(ask * 100, 1)
+        implied_probability = round(effective_price * 100, 1)
+
         return {
             "instrument_symbol": match["instrument_symbol"],
             "event_title": match["event_title"],
             "contract_label": match["contract_label"],
-            "outcome": match["outcome"],
-            "ask_price": ask,
+            "outcome": outcome,
+            "ask_price": effective_price,  # send correct price to order
             "contracts": contracts,
             "actual_cost": actual_cost,
             "potential_payout": potential_payout,
@@ -365,13 +378,17 @@ class PredictionTrader:
 
         # Step 2: Find market
         print("\n[2/5] Searching markets...")
-        match = await self.search_market(intent)
+        match = await self.search_market(intent, user_text)
         print(f"      → Matched: {match['event_title']} — {match['contract_label']}")
         print(f"      → Symbol: {match['instrument_symbol']}")
 
         # Step 3: Get live price
         print("\n[3/5] Fetching live price...")
-        ask = await self.get_live_price(match["instrument_symbol"])
+        try:
+            ask = await self.get_live_price(match["instrument_symbol"])
+        except TimeoutError:
+            ask = match["best_ask"]  # fall back to REST price
+            print(f"      → No live price, using REST ask: ${ask}")
         print(f"      → Best ask: ${ask}")
 
         # Step 4: Confirm

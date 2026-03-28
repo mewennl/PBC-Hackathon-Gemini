@@ -87,7 +87,7 @@ async def parse(req: ParseRequest):
 
     try:
         intent = await trader.parse_intent(req.text)
-        match = await trader.search_market(intent)
+        match = await trader.search_market(intent, req.text)
         ask = await trader.get_live_price(match["instrument_symbol"])
         details = trader.build_confirmation(match, ask, intent["dollar_amount"])
         return {"ok": True, "details": details}
