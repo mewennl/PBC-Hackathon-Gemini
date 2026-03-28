@@ -199,17 +199,26 @@ class PredictionTrader:
         result = data.get("result", {})
 
         if "a" in data and "s" in data:
-            symbol = data["s"]
+            symbol = data["s"].upper()  #add .upper()
             ask = float(data["a"])
             if symbol in self.price_futures and not self.price_futures[symbol].done():
                 self.price_futures[symbol].set_result(ask)
 
-        order_status = result.get("status") or data.get("X")
-        if order_status in ("NEW", "OPEN", "FILLED", "PARTIALLY_FILLED", "CANCELLED"):
-            order_id = str(result.get("orderId") or data.get("i", ""))
-            print(f"websocket order update — id={order_id} status={order_status}")
-            if order_status == "FILLED" and order_id in self.pending_orders:
-                self.pending_orders[order_id].set()
+        order_status = data.get("X") or result.get("status")
+        exchange_id = str(result.get("orderId") or data.get("i", ""))
+        client_id = str(result.get("clientOrderId") or data.get("c", ""))
+
+        if order_status in ("NEW", "OPEN"):
+            if exchange_id and exchange_id not in self.pending_orders and self.pending_orders:
+                # map exchange_id to whichever local pending order exists
+                local_id = next(iter(self.pending_orders))
+                self.pending_orders[exchange_id] = self.pending_orders[local_id]
+
+        if order_status == "FILLED":
+            if exchange_id in self.pending_orders:
+                self.pending_orders[exchange_id].set()
+            elif client_id in self.pending_orders:
+                self.pending_orders[client_id].set()
 
     async def get_live_price(self, instrument_symbol, timeout: float = 5.0) -> float:
         if self.ws is None:
