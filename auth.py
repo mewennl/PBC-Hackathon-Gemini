@@ -5,12 +5,12 @@ import hmac
 import hashlib
 
 #request_url is what???
-def get_headers(api_key, api_secret, request_url="/v2/order-events"):
+def get_headers(api_key, api_secret):
     #nonce generation, seconds
     nonce = int(time.time())
     # creating the payload
 
-    '''payload_data = {
+    '''=payload_data = {
         "request": request_url,
         "nonce": nonce,
     }
