@@ -64,6 +64,7 @@ class PredictionTrader:
                             - "event_description" should be short and search-friendly (e.g. "Kansas NCAA win" not a full sentence).
                             - If dollar_amount is missing or ambiguous, return null for that field.
                             - Return ONLY the JSON object. No explanation, no markdown, no backticks.
+                            - Preserve specific names exactly as given (e.g. "Claude", "GPT-4", "Gemini") in the event_description.
                         """
         response = await openai_client.chat.completions.create(
             model = "gpt-4o",
@@ -136,7 +137,12 @@ class PredictionTrader:
         if not events_summary:
             raise ValueError("Found events but no active contracts with pricing available.")
 
-        events_summar = events_summary[:10]
+        keyword = intent["event_description"].lower()
+        events_summary.sort(
+            key=lambda x: sum(w in x["event_title"].lower() for w in keyword.split()),
+            reverse=True
+        )
+        events_summary_trimmed = events_summary[:10]
         match_prompt = match_prompt = f"""
             You are matching a user's prediction market intent to the best available contract.
              
@@ -144,7 +150,7 @@ class PredictionTrader:
             User outcome preference: {intent['outcome']} (yes = betting it happens, no = betting it doesn't)
              
             Available contracts (JSON array):
-            {json.dumps(events_summary, indent=2)}
+            {json.dumps(events_summary_trimmed, indent=2)}
              
             Pick the single best matching contract and return ONLY this JSON:
             {{

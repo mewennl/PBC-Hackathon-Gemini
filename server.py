@@ -1,7 +1,7 @@
 import asyncio
 import json
-import uuid
 import time
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -12,9 +12,26 @@ from pydantic import BaseModel
 
 from main import PredictionTrader
 
+# ── persistence ────────────────────────────────────────────────────────────────
+POSITIONS_FILE = "positions.json"
+
+def load_positions() -> list:
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_positions(positions: list):
+    with open(POSITIONS_FILE, "w") as f:
+        json.dump(positions, f, indent=2)
+
 # ── singleton trader instance ──────────────────────────────────────────────────
 trader: PredictionTrader | None = None
 ws_task: asyncio.Task | None = None
+positions: list = load_positions()  # load from disk on startup
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -96,14 +113,32 @@ async def confirm(req: ConfirmRequest):
     try:
         order_id = await trader.place_order(details)
         await trader.await_fill(order_id, timeout=30.0)
+
+        # record position
+        positions.append({
+            "order_id": order_id,
+            "event_title": details["event_title"],
+            "contract_label": details["contract_label"],
+            "outcome": details["outcome"].upper(),
+            "contracts": details["contracts"],
+            "entry_price": details["ask_price"],
+            "cost": details["actual_cost"],
+            "potential_payout": details["potential_payout"],
+            "potential_profit": details["potential_profit"],
+            "implied_probability": details["implied_probability"],
+            "status": "open",
+            "filled_at": time.strftime("%H:%M:%S"),
+        })
+        save_positions(positions)
+
         return {"ok": True, "order_id": order_id, "message": "Order filled successfully!"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/api/health")
-async def health():
-    return {"ok": True, "ws_connected": trader is not None and trader.ws is not None}
+@app.get("/api/portfolio")
+async def portfolio():
+    return {"ok": True, "positions": positions}
 
 
 # ── serve frontend ─────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Gemini Predict</title>
+<title>Gemmy</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -265,13 +265,112 @@
     color: var(--muted);
     margin-top: 10px;
   }
+
+  /* ── portfolio panel ── */
+  .portfolio {
+    width: 100%;
+    max-width: 680px;
+    margin-top: 16px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .portfolio-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .portfolio-header span {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+
+  .portfolio-header .count {
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 2px 8px;
+  }
+
+  .portfolio-empty {
+    padding: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .position-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    gap: 12px;
+  }
+  .position-row:last-child { border-bottom: none; }
+
+  .position-left { flex: 1; min-width: 0; }
+
+  .position-event {
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+  }
+
+  .position-meta {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .position-right {
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .position-payout {
+    font-weight: 500;
+    color: var(--success);
+    font-size: 12px;
+  }
+
+  .position-cost {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .pill {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-right: 4px;
+  }
+
+  .pill-yes { background: var(--accent-lt); color: var(--accent); }
+  .pill-no  { background: #fff0f0; color: #cc3333; }
 </style>
 </head>
 <body>
 
 <header>
   <img src="/static/gemini-logo.png" alt="Gemini" style="height:30px; width:30px;" />
-  <h1>Gemini Predict</h1>
+  <h1>Gemmy</h1>
   <div class="live-badge"><span class="dot"></span>live</div>
 </header>
 
@@ -282,7 +381,17 @@
   <button id="sendBtn" onclick="sendMessage()">Send →</button>
 </div>
 
-<div class="hint">Natural language → prediction market orders · Powered by Gemini</div>
+<div class="hint">Natural language → prediction market orders · Gemmy by Gemini</div>
+
+<div class="portfolio">
+  <div class="portfolio-header">
+    <span>My Positions</span>
+    <span class="count" id="pos-count">0 open</span>
+  </div>
+  <div id="portfolio-body">
+    <div class="portfolio-empty">No positions yet — place a trade to get started.</div>
+  </div>
+</div>
 
 <script>
 const chat    = document.getElementById('chat');
@@ -293,9 +402,47 @@ let pendingDetails = null;
 
 // ── boot message ────────────────────────────────────────────────────────────
 window.onload = () => {
-  appendBot("Hey! I'm your prediction market assistant. Tell me what you want to bet on and how much — I'll find the best contract and walk you through it.");
+  appendBot("Hey! I'm Gemmy, your prediction market assistant. Tell me what you want to bet on and how much — I'll find the best contract and walk you through it.");
   input.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+  fetchPortfolio();
+  setInterval(fetchPortfolio, 10000);
 };
+
+// ── portfolio ─────────────────────────────────────────────────────────────────
+async function fetchPortfolio() {
+  try {
+    const res  = await fetch('/api/portfolio');
+    const data = await res.json();
+    if (data.ok) renderPortfolio(data.positions);
+  } catch(e) { /* silent */ }
+}
+
+function renderPortfolio(positions) {
+  const body  = document.getElementById('portfolio-body');
+  const count = document.getElementById('pos-count');
+  count.textContent = `${positions.length} open`;
+
+  if (positions.length === 0) {
+    body.innerHTML = '<div class="portfolio-empty">No positions yet — place a trade to get started.</div>';
+    return;
+  }
+
+  body.innerHTML = positions.map(p => `
+    <div class="position-row">
+      <div class="position-left">
+        <div class="position-event">${p.event_title}</div>
+        <div class="position-meta">
+          <span class="pill ${p.outcome === 'YES' ? 'pill-yes' : 'pill-no'}">${p.outcome}</span>
+          ${p.contracts} contracts · ${p.contract_label} · ${p.filled_at}
+        </div>
+      </div>
+      <div class="position-right">
+        <div class="position-payout">↑ $${p.potential_payout}</div>
+        <div class="position-cost">cost $${p.cost}</div>
+      </div>
+    </div>
+  `).join('');
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function appendMsg(cls, html) {
@@ -357,7 +504,7 @@ async function sendMessage() {
     hideTyping();
 
     if (!data.ok) {
-      appendBot(`⚠ ${data.error}`);
+      appendBot(`Sorry, I couldn't find a matching market for that. Try rephrasing — e.g. "I think X wins Y, bet $10".`);
       setLoading(false);
       return;
     }
@@ -367,7 +514,7 @@ async function sendMessage() {
 
   } catch(e) {
     hideTyping();
-    appendBot('⚠ Could not reach the server. Is the backend running?');
+    appendBot('Having trouble connecting right now. Make sure the server is running and try again.');
     setLoading(false);
   }
 }
@@ -418,12 +565,13 @@ async function confirmTrade() {
 
     if (data.ok) {
       appendBot(`✓ Order filled! <strong>${pendingDetails.contracts} contracts</strong> of <strong>${pendingDetails.contract_label}</strong> @ $${pendingDetails.ask_price}. Good luck!`);
+      fetchPortfolio();
     } else {
-      appendBot(`⚠ Order failed: ${data.error}`);
+      appendBot(`Something went wrong placing your order. Please try again.`);
     }
   } catch(e) {
     hideTyping();
-    appendBot('⚠ Could not reach the server.');
+    appendBot('Having trouble connecting right now. Make sure the server is running and try again.');
   }
 
   pendingDetails = null;
