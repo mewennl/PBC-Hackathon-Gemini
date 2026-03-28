@@ -103,7 +103,6 @@ class PredictionTrader:
             data = resp.json()
 
         events = data.get("data", [])
-        print(f"debugg: found {len(events)} events: {[ev['title'] for ev in events]}")
         if not events:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -173,22 +172,27 @@ class PredictionTrader:
         match["outcome"] = intent["outcome"]
         return match
 
-
     async def connect_account(self):
-        headers = auth.get_headers(config.API_KEY, config.API_SECRET)
+        while True:
+            try:
+                headers = auth.get_headers(config.API_KEY, config.API_SECRET)
+                async with websockets.connect(config.WSS_URL, additional_headers=headers) as ws:
+                    self.ws = ws
+                    print("connected")
+                    await ws.send(json.dumps({
+                        "id": "sub-orders",
+                        "method": "subscribe",
+                        "params": ["orders@account"]
+                    }))
+                    print("orders@account subscribed")
 
-        async with websockets.connect(config.WSS_URL, additional_headers=headers) as ws:
-            self.ws = ws
-            print("connected")
-            await ws.send(json.dumps({
-                "id": "sub-orders",
-                "method": "subscribe",
-                "params": ["orders@account"]
-            }))
-            print("orders@account subscribed")
+                    async for raw in ws:
+                        await self._handle_message(json.loads(raw))
 
-            async for raw in ws:
-                await self._handle_message(json.loads(raw))
+            except Exception as e:
+                print(f"ws disconnected: {e}, reconnecting")
+                self.ws = None
+                await asyncio.sleep(2)
 
     async def _handle_message(self, data):
         if data.get("status") and data["status"] != 200:
@@ -239,12 +243,14 @@ class PredictionTrader:
         except asyncio.TimeoutError:
             raise TimeoutError(f"no price received for {instrument_symbol} within {timeout} seconds")
         finally:
-            #unsub
-            await self.ws.send(json.dumps({
-                "id": f"unsub-{instrument_symbol}",
-                "method": "unsubscribe",
-                "params": [f"{instrument_symbol}@bookTicker"]
-            }))
+            try:
+                await self.ws.send(json.dumps({
+                    "id": f"unsub-{instrument_symbol}",
+                    "method": "unsubscribe",
+                    "params": [f"{instrument_symbol}@bookTicker"]
+                }))
+            except Exception:
+                pass
             self.price_futures.pop(instrument_symbol, None)
 
     def build_confirmation(self, match: dict, ask:float, dollar_amount: float) -> dict:
